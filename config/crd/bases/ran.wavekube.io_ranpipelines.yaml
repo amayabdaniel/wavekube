@@ -1,0 +1,79 @@
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: ranpipelines.ran.wavekube.io
+  labels:
+    app.kubernetes.io/managed-by: wavekube
+spec:
+  group: ran.wavekube.io
+  names:
+    kind: RANPipeline
+    listKind: RANPipelineList
+    plural: ranpipelines
+    singular: ranpipeline
+    shortNames:
+      - rp
+  scope: Namespaced
+  versions:
+    - name: v1alpha1
+      served: true
+      storage: true
+      additionalPrinterColumns:
+        - name: Phase
+          type: string
+          jsonPath: .status.phase
+        - name: GNodeB
+          type: string
+          jsonPath: .spec.gnodebRef
+        - name: Age
+          type: date
+          jsonPath: .metadata.creationTimestamp
+      subresources:
+        status: {}
+      schema:
+        openAPIV3Schema:
+          type: object
+          properties:
+            spec:
+              type: object
+              required: [image, pipelineDefinition, gnodebRef, resources]
+              properties:
+                image:
+                  type: string
+                pipelineDefinition:
+                  type: string
+                gnodebRef:
+                  type: string
+                resources:
+                  type: object
+                  properties:
+                    gpuCount:
+                      type: integer
+                      minimum: 1
+                    memoryMi:
+                      type: integer
+                    cpuCores:
+                      type: integer
+                    gpuType:
+                      type: string
+            status:
+              type: object
+              properties:
+                phase:
+                  type: string
+                conditions:
+                  type: array
+                  items:
+                    type: object
+                    properties:
+                      type:
+                        type: string
+                      status:
+                        type: string
+                      lastTransitionTime:
+                        type: string
+                        format: date-time
+                      reason:
+                        type: string
+                      message:
+                        type: string

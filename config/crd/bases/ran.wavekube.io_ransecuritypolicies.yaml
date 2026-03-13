@@ -1,0 +1,93 @@
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: ransecuritypolicies.ran.wavekube.io
+  labels:
+    app.kubernetes.io/managed-by: wavekube
+spec:
+  group: ran.wavekube.io
+  names:
+    kind: RANSecurityPolicy
+    listKind: RANSecurityPolicyList
+    plural: ransecuritypolicies
+    singular: ransecuritypolicy
+    shortNames:
+      - rsp
+  scope: Namespaced
+  versions:
+    - name: v1alpha1
+      served: true
+      storage: true
+      additionalPrinterColumns:
+        - name: Compliant
+          type: boolean
+          jsonPath: .status.compliant
+        - name: Age
+          type: date
+          jsonPath: .metadata.creationTimestamp
+      subresources:
+        status: {}
+      schema:
+        openAPIV3Schema:
+          type: object
+          properties:
+            spec:
+              type: object
+              properties:
+                imageScanningEnabled:
+                  type: boolean
+                  default: true
+                maxCVSSScore:
+                  type: number
+                  default: 7.0
+                seccompProfile:
+                  type: string
+                networkIsolation:
+                  type: boolean
+                  default: true
+                runtimeMonitoring:
+                  type: boolean
+                  default: true
+                allowedRegistries:
+                  type: array
+                  items:
+                    type: string
+                encryptFronthaul:
+                  type: boolean
+                  default: false
+            status:
+              type: object
+              properties:
+                compliant:
+                  type: boolean
+                violations:
+                  type: array
+                  items:
+                    type: object
+                    properties:
+                      gnodebName:
+                        type: string
+                      rule:
+                        type: string
+                      severity:
+                        type: string
+                      message:
+                        type: string
+                      timestamp:
+                        type: string
+                conditions:
+                  type: array
+                  items:
+                    type: object
+                    properties:
+                      type:
+                        type: string
+                      status:
+                        type: string
+                      lastTransitionTime:
+                        type: string
+                        format: date-time
+                      reason:
+                        type: string
+                      message:
+                        type: string
