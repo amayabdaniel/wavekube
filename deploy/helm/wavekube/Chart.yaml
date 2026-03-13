@@ -1,0 +1,22 @@
+apiVersion: v2
+name: wavekube
+description: Kubernetes operator for NVIDIA Aerial GPU-accelerated 5G/6G RAN
+type: application
+version: 0.1.0
+appVersion: "0.1.0"
+keywords:
+  - 5g
+  - 6g
+  - ran
+  - nvidia
+  - aerial
+  - gpu
+  - telecom
+  - kubernetes
+  - operator
+home: https://github.com/amayabdaniel/wavekube
+sources:
+  - https://github.com/amayabdaniel/wavekube
+maintainers:
+  - name: Daniel Amaya
+    url: https://github.com/amayabdaniel

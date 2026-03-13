@@ -1,0 +1,137 @@
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: gnodebs.ran.wavekube.io
+  labels:
+    app.kubernetes.io/managed-by: wavekube
+spec:
+  group: ran.wavekube.io
+  names:
+    kind: GNodeB
+    listKind: GNodeBList
+    plural: gnodebs
+    singular: gnodeb
+    shortNames:
+      - gnb
+  scope: Namespaced
+  versions:
+    - name: v1alpha1
+      served: true
+      storage: true
+      additionalPrinterColumns:
+        - name: Phase
+          type: string
+          jsonPath: .status.phase
+        - name: Ready
+          type: integer
+          jsonPath: .status.readyReplicas
+        - name: Band
+          type: string
+          jsonPath: .spec.phyConfig.band
+        - name: Age
+          type: date
+          jsonPath: .metadata.creationTimestamp
+      subresources:
+        status: {}
+      schema:
+        openAPIV3Schema:
+          type: object
+          properties:
+            spec:
+              type: object
+              required: [image, gpuResources, phyConfig, network]
+              properties:
+                image:
+                  type: string
+                replicas:
+                  type: integer
+                  default: 1
+                  minimum: 1
+                gpuResources:
+                  type: object
+                  properties:
+                    count:
+                      type: integer
+                      default: 1
+                      minimum: 1
+                    type:
+                      type: string
+                    enableRDMA:
+                      type: boolean
+                      default: false
+                phyConfig:
+                  type: object
+                  required: [bandwidth, numerology, band]
+                  properties:
+                    bandwidth:
+                      type: integer
+                      enum: [5, 10, 15, 20, 25, 30, 40, 50, 60, 70, 80, 90, 100]
+                    numerology:
+                      type: integer
+                      minimum: 0
+                      maximum: 4
+                    band:
+                      type: string
+                    maxUEs:
+                      type: integer
+                      default: 32
+                network:
+                  type: object
+                  required: [fronthaulInterface]
+                  properties:
+                    fronthaulInterface:
+                      type: string
+                    midhaulCIDR:
+                      type: string
+                    backhaulCIDR:
+                      type: string
+                securityPolicyRef:
+                  type: string
+            status:
+              type: object
+              properties:
+                phase:
+                  type: string
+                  enum: [Pending, Initializing, Running, Degraded, Failed]
+                readyReplicas:
+                  type: integer
+                gpuStatus:
+                  type: array
+                  items:
+                    type: object
+                    properties:
+                      deviceID:
+                        type: string
+                      healthy:
+                        type: boolean
+                      temperature:
+                        type: integer
+                      utilization:
+                        type: integer
+                conditions:
+                  type: array
+                  items:
+                    type: object
+                    properties:
+                      type:
+                        type: string
+                      status:
+                        type: string
+                      lastTransitionTime:
+                        type: string
+                        format: date-time
+                      reason:
+                        type: string
+                      message:
+                        type: string
+                metrics:
+                  type: object
+                  properties:
+                    throughputDLMbps:
+                      type: number
+                    throughputULMbps:
+                      type: number
+                    connectedUEs:
+                      type: integer
+                    bler:
+                      type: number

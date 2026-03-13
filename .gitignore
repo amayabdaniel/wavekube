@@ -1,0 +1,10 @@
+bin/
+cover.out
+*.exe
+*.test
+*.prof
+vendor/
+.idea/
+.vscode/
+*.swp
+*.swo

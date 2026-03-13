@@ -1,0 +1,38 @@
+apiVersion: ran.wavekube.io/v1alpha1
+kind: GNodeB
+metadata:
+  name: edge-gnb-01
+  namespace: wavekube-system
+spec:
+  image: nvcr.io/nvidia/aerial/aerial-ran:24.3
+  replicas: 1
+  gpuResources:
+    count: 1
+    type: A100
+    enableRDMA: true
+  phyConfig:
+    bandwidth: 100
+    numerology: 1
+    band: n78
+    maxUEs: 64
+  network:
+    fronthaulInterface: eth1
+    midhaulCIDR: 10.10.0.0/24
+    backhaulCIDR: 10.20.0.0/24
+  securityPolicyRef: default-security
+---
+apiVersion: ran.wavekube.io/v1alpha1
+kind: RANSecurityPolicy
+metadata:
+  name: default-security
+  namespace: wavekube-system
+spec:
+  imageScanningEnabled: true
+  maxCVSSScore: 7.0
+  seccompProfile: /etc/wavekube/seccomp-aerial.json
+  networkIsolation: true
+  runtimeMonitoring: true
+  allowedRegistries:
+    - nvcr.io/nvidia/aerial/
+    - ghcr.io/amayabdaniel/
+  encryptFronthaul: false
