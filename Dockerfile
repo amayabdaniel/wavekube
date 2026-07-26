@@ -1,11 +1,14 @@
 FROM golang:1.22 AS builder
+# TARGETARCH is provided automatically by BuildKit (e.g. amd64, arm64).
+# Defaults to amd64 for plain `docker build` without buildx.
+ARG TARGETARCH=amd64
 WORKDIR /workspace
 COPY go.mod go.sum ./
 RUN go mod download
 COPY cmd/ cmd/
 COPY api/ api/
 COPY internal/ internal/
-RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -a -o manager cmd/main.go
+RUN CGO_ENABLED=0 GOOS=linux GOARCH=${TARGETARCH} go build -a -o manager cmd/main.go
 
 FROM gcr.io/distroless/static:nonroot
 WORKDIR /
