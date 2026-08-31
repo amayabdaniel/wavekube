@@ -56,8 +56,10 @@ func (r *RANPipelineReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 				LastTransitionTime: metav1.Now(),
 			}
 			setCondition(&pipeline.Status.Conditions, meta)
-			_ = r.Status().Update(ctx, pipeline)
-			return ctrl.Result{}, nil
+			// Return the status-update error so a failed write requeues, rather
+			// than silently leaving the pipeline's reported phase diverged from
+			// reality (this path does not otherwise requeue).
+			return ctrl.Result{}, r.Status().Update(ctx, pipeline)
 		}
 		return ctrl.Result{}, err
 	}
