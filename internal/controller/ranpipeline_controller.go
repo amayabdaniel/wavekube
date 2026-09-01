@@ -79,39 +79,78 @@ func (r *RANPipelineReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 	}
 
 	// Reconcile the pipeline Job
-	if err := r.reconcileJob(ctx, pipeline, gnb); err != nil {
+	job, err := r.reconcileJob(ctx, pipeline, gnb)
+	if err != nil {
 		pipeline.Status.Phase = "Failed"
 		_ = r.Status().Update(ctx, pipeline)
 		return ctrl.Result{}, err
 	}
 
-	pipeline.Status.Phase = "Running"
+	// Reflect the Job's ACTUAL state — do not report Running/Ready just because
+	// the Job object exists. A failed or not-yet-started Job must not surface as
+	// a running pipeline.
+	phase, ready, reason, msg := pipelinePhaseFromJob(job)
+	pipeline.Status.Phase = phase
+	readyStatus := metav1.ConditionFalse
+	if ready {
+		readyStatus = metav1.ConditionTrue
+	}
 	setCondition(&pipeline.Status.Conditions, metav1.Condition{
 		Type:               "Ready",
-		Status:             metav1.ConditionTrue,
-		Reason:             "PipelineDeployed",
-		Message:            "Pipeline job created and running",
+		Status:             readyStatus,
+		Reason:             reason,
+		Message:            msg,
 		LastTransitionTime: metav1.Now(),
 	})
 	if err := r.Status().Update(ctx, pipeline); err != nil {
 		return ctrl.Result{}, err
 	}
 
+	// Requeue while the Job is still progressing so status tracks it.
+	if phase == "Pending" || (phase == "Running" && !ready) {
+		return ctrl.Result{RequeueAfter: 10e9}, nil
+	}
 	return ctrl.Result{}, nil
 }
 
-func (r *RANPipelineReconciler) reconcileJob(ctx context.Context, pipeline *ranv1alpha1.RANPipeline, gnb *ranv1alpha1.GNodeB) error {
+// pipelinePhaseFromJob maps a batch Job's observed state to the pipeline phase,
+// Ready flag, condition reason and message.
+func pipelinePhaseFromJob(job *batchv1.Job) (phase string, ready bool, reason, msg string) {
+	for _, c := range job.Status.Conditions {
+		if c.Type == batchv1.JobFailed && c.Status == corev1.ConditionTrue {
+			return "Failed", false, "PipelineJobFailed", "Pipeline job failed: " + c.Reason
+		}
+		if c.Type == batchv1.JobComplete && c.Status == corev1.ConditionTrue {
+			return "Running", true, "PipelineJobComplete", "Pipeline job completed successfully"
+		}
+	}
+	if job.Status.Active > 0 {
+		return "Running", true, "PipelineJobActive", "Pipeline job is active"
+	}
+	return "Pending", false, "PipelineJobPending", "Pipeline job created, waiting to start"
+}
+
+// reconcileJob ensures the pipeline Job exists and returns its current state so
+// the caller can reflect it in the pipeline status.
+func (r *RANPipelineReconciler) reconcileJob(ctx context.Context, pipeline *ranv1alpha1.RANPipeline, gnb *ranv1alpha1.GNodeB) (*batchv1.Job, error) {
 	job := &batchv1.Job{}
 	jobName := types.NamespacedName{Name: pipeline.Name + "-pipeline", Namespace: pipeline.Namespace}
 
-	if err := r.Get(ctx, jobName, job); errors.IsNotFound(err) {
+	err := r.Get(ctx, jobName, job)
+	if errors.IsNotFound(err) {
 		job = r.buildJob(pipeline, gnb)
 		if err := ctrl.SetControllerReference(pipeline, job, r.Scheme); err != nil {
-			return err
+			return nil, err
 		}
-		return r.Create(ctx, job)
+		if err := r.Create(ctx, job); err != nil {
+			return nil, err
+		}
+		return job, nil
 	}
-	return nil
+	if err != nil {
+		return nil, err
+	}
+	return job, nil
 }
 
 func (r *RANPipelineReconciler) buildJob(pipeline *ranv1alpha1.RANPipeline, gnb *ranv1alpha1.GNodeB) *batchv1.Job {
