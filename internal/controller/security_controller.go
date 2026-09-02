@@ -55,10 +55,13 @@ func (r *RANSecurityPolicyReconciler) Reconcile(ctx context.Context, req ctrl.Re
 		violations = append(violations, v...)
 	}
 
-	// Reconcile network isolation
+	// Reconcile the requested enforcement controls, collecting failures so status
+	// reflects whether they were ACTUALLY applied — not just that we tried.
+	var enforceErrs []string
 	if policy.Spec.NetworkIsolation {
 		if err := r.reconcileNetworkPolicies(ctx, policy); err != nil {
 			logger.Error(err, "Failed to reconcile network policies")
+			enforceErrs = append(enforceErrs, "network isolation: "+err.Error())
 		}
 	}
 
@@ -66,6 +69,7 @@ func (r *RANSecurityPolicyReconciler) Reconcile(ctx context.Context, req ctrl.Re
 	if policy.Spec.RuntimeMonitoring {
 		if err := r.reconcileFalcoRules(ctx, policy); err != nil {
 			logger.Error(err, "Failed to reconcile Falco rules")
+			enforceErrs = append(enforceErrs, "runtime monitoring: "+err.Error())
 		}
 	}
 
@@ -80,8 +84,32 @@ func (r *RANSecurityPolicyReconciler) Reconcile(ctx context.Context, req ctrl.Re
 		LastTransitionTime: metav1.Now(),
 	})
 
+	// Enforced reflects whether the requested controls were actually applied.
+	// A security policy that reports compliant/audited while its NetworkPolicy or
+	// Falco rules failed to apply is the dangerous case — surface it.
+	enforced := len(enforceErrs) == 0
+	enforcedStatus := metav1.ConditionTrue
+	reason, msg := "ControlsApplied", "Requested security controls applied"
+	if !enforced {
+		enforcedStatus = metav1.ConditionFalse
+		reason, msg = "EnforcementFailed", "Enforcement incomplete: "+strings.Join(enforceErrs, "; ")
+	}
+	setCondition(&policy.Status.Conditions, metav1.Condition{
+		Type:               "Enforced",
+		Status:             enforcedStatus,
+		Reason:             reason,
+		Message:            msg,
+		LastTransitionTime: metav1.Now(),
+	})
+
 	if err := r.Status().Update(ctx, policy); err != nil {
 		return ctrl.Result{}, err
+	}
+
+	// If a control failed to apply, surface it (fail closed) so it requeues with
+	// backoff rather than sitting green for 60s claiming controls it doesn't have.
+	if !enforced {
+		return ctrl.Result{}, fmt.Errorf("enforcement incomplete: %s", strings.Join(enforceErrs, "; "))
 	}
 
 	// Re-audit every 60 seconds
