@@ -82,6 +82,68 @@ func TestSecurityReconcile_NetworkPolicyApplyFailureSurfaces(t *testing.T) {
 	}
 }
 
+// The security-critical case: an isolation NetworkPolicy that EXISTS but was
+// edited to be permissive must be corrected back to the required spec — a control
+// that self-heals on deletion but not on weakening is trivially defeated by
+// weakening. Effect-check: mutate the NP permissive, reconcile, assert restored.
+func TestSecurityReconcile_NetworkPolicyDriftIsCorrected(t *testing.T) {
+	scheme := secScheme(t)
+	policy := &ranv1alpha1.RANSecurityPolicy{
+		ObjectMeta: metav1.ObjectMeta{Name: "pol", Namespace: "default"},
+		Spec:       ranv1alpha1.RANSecurityPolicySpec{NetworkIsolation: true, RuntimeMonitoring: false},
+	}
+	// A widened NetworkPolicy already in the cluster: allow-all ingress/egress,
+	// no pod selector — i.e. isolation effectively disabled.
+	drifted := &networkingv1.NetworkPolicy{
+		ObjectMeta: metav1.ObjectMeta{Name: "pol-fronthaul-isolation", Namespace: "default"},
+		Spec: networkingv1.NetworkPolicySpec{
+			PodSelector: metav1.LabelSelector{},
+			PolicyTypes: []networkingv1.PolicyType{networkingv1.PolicyTypeIngress},
+			Ingress:     []networkingv1.NetworkPolicyIngressRule{{}}, // {} = allow all
+			Egress:      []networkingv1.NetworkPolicyEgressRule{{}},  // {} = allow all
+		},
+	}
+	c := fake.NewClientBuilder().WithScheme(scheme).
+		WithObjects(policy, drifted).
+		WithStatusSubresource(policy).
+		Build()
+
+	r := &RANSecurityPolicyReconciler{Client: c, Scheme: scheme}
+	if _, err := r.Reconcile(context.Background(), ctrl.Request{NamespacedName: types.NamespacedName{Namespace: "default", Name: "pol"}}); err != nil {
+		t.Fatalf("reconcile: %v", err)
+	}
+
+	// Effect: the NetworkPolicy spec must be restored to the required isolation.
+	np := &networkingv1.NetworkPolicy{}
+	if e := c.Get(context.Background(), types.NamespacedName{Namespace: "default", Name: "pol-fronthaul-isolation"}, np); e != nil {
+		t.Fatalf("get np: %v", e)
+	}
+	if len(np.Spec.Ingress) != 2 {
+		t.Fatalf("drift not corrected: want 2 restrictive ingress rules, got %d (%+v)", len(np.Spec.Ingress), np.Spec.Ingress)
+	}
+	if len(np.Spec.Ingress[0].Ports) == 0 || np.Spec.Ingress[0].Ports[0].Port.IntValue() != 44000 {
+		t.Fatalf("fronthaul port rule not restored: %+v", np.Spec.Ingress[0])
+	}
+	if len(np.Spec.PodSelector.MatchLabels) == 0 {
+		t.Fatal("pod selector not restored — policy would still apply cluster-wide/permissively")
+	}
+	// Visibility: the correction must be recorded, not silent.
+	got := &ranv1alpha1.RANSecurityPolicy{}
+	_ = c.Get(context.Background(), types.NamespacedName{Namespace: "default", Name: "pol"}, got)
+	var found bool
+	for _, cond := range got.Status.Conditions {
+		if cond.Type == "NetworkPolicyReconciled" {
+			found = true
+			if cond.Reason != "DriftCorrected" {
+				t.Fatalf("condition reason want DriftCorrected got %q", cond.Reason)
+			}
+		}
+	}
+	if !found {
+		t.Fatal("expected a NetworkPolicyReconciled condition surfacing the correction")
+	}
+}
+
 // When controls apply cleanly, Enforced=True and the reconcile requeues normally.
 func TestSecurityReconcile_ControlsAppliedEnforcedTrue(t *testing.T) {
 	scheme := secScheme(t)

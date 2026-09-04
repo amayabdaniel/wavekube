@@ -14,6 +14,7 @@ import (
 	"k8s.io/apimachinery/pkg/util/intstr"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 
 	ranv1alpha1 "github.com/amayabdaniel/wavekube/api/v1alpha1"
@@ -59,9 +60,28 @@ func (r *RANSecurityPolicyReconciler) Reconcile(ctx context.Context, req ctrl.Re
 	// reflects whether they were ACTUALLY applied — not just that we tried.
 	var enforceErrs []string
 	if policy.Spec.NetworkIsolation {
-		if err := r.reconcileNetworkPolicies(ctx, policy); err != nil {
+		op, err := r.reconcileNetworkPolicies(ctx, policy)
+		if err != nil {
 			logger.Error(err, "Failed to reconcile network policies")
 			enforceErrs = append(enforceErrs, "network isolation: "+err.Error())
+		} else {
+			// Surface what happened so a drift correction is visible, not silent —
+			// someone edited the NetworkPolicy for a reason and should see it was reverted.
+			reason, npMsg := "InSync", "NetworkPolicy matches the required isolation spec"
+			switch op {
+			case controllerutil.OperationResultCreated:
+				reason, npMsg = "Created", "Created the isolation NetworkPolicy"
+			case controllerutil.OperationResultUpdated:
+				reason, npMsg = "DriftCorrected", "Reverted out-of-band changes to the isolation NetworkPolicy"
+				logger.Info("corrected NetworkPolicy drift", "policy", policy.Name)
+			}
+			setCondition(&policy.Status.Conditions, metav1.Condition{
+				Type:               "NetworkPolicyReconciled",
+				Status:             metav1.ConditionTrue,
+				Reason:             reason,
+				Message:            npMsg,
+				LastTransitionTime: metav1.Now(),
+			})
 		}
 	}
 
@@ -151,71 +171,52 @@ func (r *RANSecurityPolicyReconciler) auditGNodeB(gnb *ranv1alpha1.GNodeB, polic
 	return violations
 }
 
-func (r *RANSecurityPolicyReconciler) reconcileNetworkPolicies(ctx context.Context, policy *ranv1alpha1.RANSecurityPolicy) error {
-	// Fronthaul isolation — only allow traffic on fronthaul ports between RAN pods
-	fronthaulPolicy := &networkingv1.NetworkPolicy{}
-	npName := types.NamespacedName{Name: policy.Name + "-fronthaul-isolation", Namespace: policy.Namespace}
-
-	if err := r.Get(ctx, npName, fronthaulPolicy); errors.IsNotFound(err) {
-		fronthaulPort := intstr.FromInt(44000) // eCPRI default port
-		proto := corev1.ProtocolUDP
-
-		fronthaulPolicy = &networkingv1.NetworkPolicy{
-			ObjectMeta: metav1.ObjectMeta{
-				Name:      npName.Name,
-				Namespace: npName.Namespace,
-				Labels: map[string]string{
-					"app.kubernetes.io/managed-by": "wavekube",
-					"ran.wavekube.io/policy":       policy.Name,
-				},
-			},
-			Spec: networkingv1.NetworkPolicySpec{
-				PodSelector: metav1.LabelSelector{
-					MatchLabels: map[string]string{
-						"app.kubernetes.io/name": "gnodeb",
-					},
-				},
-				PolicyTypes: []networkingv1.PolicyType{
-					networkingv1.PolicyTypeIngress,
-					networkingv1.PolicyTypeEgress,
-				},
-				Ingress: []networkingv1.NetworkPolicyIngressRule{
-					{
-						// Allow fronthaul eCPRI
-						Ports: []networkingv1.NetworkPolicyPort{
-							{Port: &fronthaulPort, Protocol: &proto},
-						},
-					},
-					{
-						// Allow metrics scraping
-						Ports: []networkingv1.NetworkPolicyPort{
-							{Port: &intstr.IntOrString{Type: intstr.Int, IntVal: 9090}, Protocol: protocolPtr(corev1.ProtocolTCP)},
-						},
-					},
-				},
-				Egress: []networkingv1.NetworkPolicyEgressRule{
-					{
-						// Allow DNS
-						Ports: []networkingv1.NetworkPolicyPort{
-							{Port: &intstr.IntOrString{Type: intstr.Int, IntVal: 53}, Protocol: protocolPtr(corev1.ProtocolUDP)},
-						},
-					},
-					{
-						// Allow fronthaul eCPRI egress
-						Ports: []networkingv1.NetworkPolicyPort{
-							{Port: &fronthaulPort, Protocol: &proto},
-						},
-					},
-				},
-			},
-		}
-		if err := ctrl.SetControllerReference(policy, fronthaulPolicy, r.Scheme); err != nil {
-			return err
-		}
-		return r.Create(ctx, fronthaulPolicy)
+// desiredFronthaulPolicySpec is the single source of truth for the isolation
+// NetworkPolicy. Both create and drift-correction reconcile against it, so an NP
+// that was edited to be more permissive is restored, not just recreated when
+// deleted.
+func desiredFronthaulPolicySpec() networkingv1.NetworkPolicySpec {
+	fronthaulPort := intstr.FromInt(44000) // eCPRI default port
+	proto := corev1.ProtocolUDP
+	return networkingv1.NetworkPolicySpec{
+		PodSelector: metav1.LabelSelector{
+			MatchLabels: map[string]string{"app.kubernetes.io/name": "gnodeb"},
+		},
+		PolicyTypes: []networkingv1.PolicyType{
+			networkingv1.PolicyTypeIngress,
+			networkingv1.PolicyTypeEgress,
+		},
+		Ingress: []networkingv1.NetworkPolicyIngressRule{
+			{Ports: []networkingv1.NetworkPolicyPort{{Port: &fronthaulPort, Protocol: &proto}}}, // fronthaul eCPRI
+			{Ports: []networkingv1.NetworkPolicyPort{{Port: &intstr.IntOrString{Type: intstr.Int, IntVal: 9090}, Protocol: protocolPtr(corev1.ProtocolTCP)}}}, // metrics
+		},
+		Egress: []networkingv1.NetworkPolicyEgressRule{
+			{Ports: []networkingv1.NetworkPolicyPort{{Port: &intstr.IntOrString{Type: intstr.Int, IntVal: 53}, Protocol: protocolPtr(corev1.ProtocolUDP)}}}, // DNS
+			{Ports: []networkingv1.NetworkPolicyPort{{Port: &fronthaulPort, Protocol: &proto}}}, // fronthaul eCPRI egress
+		},
 	}
+}
 
-	return nil
+// reconcileNetworkPolicies enforces the isolation NetworkPolicy by reconciling
+// its SPEC, not merely its existence. It returns the operation performed so the
+// caller can surface a drift correction (an NP widened out-of-band is reverted).
+func (r *RANSecurityPolicyReconciler) reconcileNetworkPolicies(ctx context.Context, policy *ranv1alpha1.RANSecurityPolicy) (controllerutil.OperationResult, error) {
+	np := &networkingv1.NetworkPolicy{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      policy.Name + "-fronthaul-isolation",
+			Namespace: policy.Namespace,
+		},
+	}
+	return controllerutil.CreateOrUpdate(ctx, r.Client, np, func() error {
+		if np.Labels == nil {
+			np.Labels = map[string]string{}
+		}
+		np.Labels["app.kubernetes.io/managed-by"] = "wavekube"
+		np.Labels["ran.wavekube.io/policy"] = policy.Name
+		// Restore the required spec — this is what reverts any out-of-band widening.
+		np.Spec = desiredFronthaulPolicySpec()
+		return ctrl.SetControllerReference(policy, np, r.Scheme)
+	})
 }
 
 func (r *RANSecurityPolicyReconciler) reconcileFalcoRules(ctx context.Context, policy *ranv1alpha1.RANSecurityPolicy) error {
