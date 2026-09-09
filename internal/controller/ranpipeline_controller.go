@@ -106,8 +106,13 @@ func (r *RANPipelineReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 		return ctrl.Result{}, err
 	}
 
-	// Requeue while the Job is still progressing so status tracks it.
-	if phase == "Pending" || (phase == "Running" && !ready) {
+	// Requeue only while the pipeline is still progressing toward a terminal
+	// state, so status keeps tracking a Job that hasn't reported Active yet.
+	// Succeeded and Failed are terminal: a finished pipeline is not requeued
+	// here — re-reconciliation on any further Job change is driven by the
+	// Owns(&batchv1.Job{}) watch, not a timer, so a completed pipeline does not
+	// spin on a 10s loop forever.
+	if phase == "Pending" {
 		return ctrl.Result{RequeueAfter: 10e9}, nil
 	}
 	return ctrl.Result{}, nil
@@ -121,7 +126,14 @@ func pipelinePhaseFromJob(job *batchv1.Job) (phase string, ready bool, reason, m
 			return "Failed", false, "PipelineJobFailed", "Pipeline job failed: " + c.Reason
 		}
 		if c.Type == batchv1.JobComplete && c.Status == corev1.ConditionTrue {
-			return "Running", true, "PipelineJobComplete", "Pipeline job completed successfully"
+			// Terminal success. The pipeline is modelled as a run-to-completion
+			// batch Job (BackoffLimit/OnFailure), not a long-lived Deployment, so a
+			// completed Job means the pipeline is DONE, not "Running" — reporting
+			// Running here is the same plausible-wrong-state this mapping exists to
+			// prevent. Ready=false by design: Ready marks a pipeline that is up and
+			// serving now (see the Active branch); a finished Job is not serving.
+			// The successful outcome is carried by phase=Succeeded, not by Ready.
+			return "Succeeded", false, "PipelineJobComplete", "Pipeline job completed successfully"
 		}
 	}
 	if job.Status.Active > 0 {

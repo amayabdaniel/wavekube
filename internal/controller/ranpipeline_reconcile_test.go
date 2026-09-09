@@ -115,6 +115,45 @@ func TestRANPipelineReconcile_ActiveJobIsRunning(t *testing.T) {
 	}
 }
 
+// The bug: a pipeline whose Job has COMPLETED is a run-to-completion batch job
+// that has finished — it must report Phase=Succeeded (terminal), not "Running" as
+// if it were still processing. And a terminal pipeline must not be requeued on a
+// timer: nothing further will happen until the Job object changes (watch-driven).
+// Ready must not be True on a finished job — it has terminated, it is not serving.
+func TestRANPipelineReconcile_CompletedJobIsSucceeded(t *testing.T) {
+	scheme := testScheme(t)
+	gnb := runningGNodeB("g1", "default")
+	pipeline := pipelineFor("p1", "default", "g1")
+	doneJob := &batchv1.Job{
+		ObjectMeta: metav1.ObjectMeta{Name: "p1-pipeline", Namespace: "default"},
+		Status: batchv1.JobStatus{Conditions: []batchv1.JobCondition{
+			{Type: batchv1.JobComplete, Status: corev1.ConditionTrue, Reason: "CompletionsReached"},
+		}},
+	}
+	c := fake.NewClientBuilder().WithScheme(scheme).
+		WithObjects(gnb, pipeline, doneJob).
+		WithStatusSubresource(pipeline).
+		Build()
+
+	r := &RANPipelineReconciler{Client: c, Scheme: scheme}
+	res, err := r.Reconcile(context.Background(), ctrl.Request{NamespacedName: types.NamespacedName{Namespace: "default", Name: "p1"}})
+	if err != nil {
+		t.Fatalf("reconcile: %v", err)
+	}
+	if res.RequeueAfter != 0 {
+		t.Fatalf("a Succeeded (terminal) pipeline must not requeue on a timer, got RequeueAfter=%v", res.RequeueAfter)
+	}
+	got := &ranv1alpha1.RANPipeline{}
+	if err := c.Get(context.Background(), types.NamespacedName{Namespace: "default", Name: "p1"}, got); err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	if got.Status.Phase != "Succeeded" {
+		t.Fatalf("phase want Succeeded got %q", got.Status.Phase)
+	}
+	// Ready is a liveness signal — a finished job is not serving.
+	readyCondFalse(t, got)
+}
+
 // When a RANPipeline references a missing GNodeB, the reconciler records
 // Phase=Failed. If persisting that status fails, the reconcile must return the
 // error so controller-runtime requeues — otherwise the operator silently leaves
