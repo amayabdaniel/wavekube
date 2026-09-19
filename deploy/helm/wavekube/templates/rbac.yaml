@@ -27,12 +27,15 @@ rules:
   - apiGroups: ["networking.k8s.io"]
     resources: ["networkpolicies"]
     verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  # Least privilege: the controllers only Create / CreateOrUpdate services and
+  # configmaps (no code path deletes them), so no "delete". "pods" was granted
+  # cluster-wide full CRUD but is never used — the PodTemplateSpecs live inside
+  # the Deployments/Jobs, whose own controllers create the pods; the operator
+  # needs no direct pods access. "events" was granted but no EventRecorder is
+  # wired. Both removed.
   - apiGroups: [""]
-    resources: ["services", "configmaps", "pods"]
-    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
-  - apiGroups: [""]
-    resources: ["events"]
-    verbs: ["create", "patch"]
+    resources: ["services", "configmaps"]
+    verbs: ["get", "list", "watch", "create", "update", "patch"]
   # Required for controller-runtime leader election (--leader-elect).
   - apiGroups: ["coordination.k8s.io"]
     resources: ["leases"]
