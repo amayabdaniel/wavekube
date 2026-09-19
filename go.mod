@@ -1,6 +1,6 @@
 module github.com/amayabdaniel/wavekube
 
-go 1.22.0
+go 1.26.1
 
 require (
 	k8s.io/api v0.30.0
@@ -50,7 +50,7 @@ require (
 	golang.org/x/oauth2 v0.12.0 // indirect
 	golang.org/x/sys v0.18.0 // indirect
 	golang.org/x/term v0.18.0 // indirect
-	golang.org/x/text v0.14.0 // indirect
+	golang.org/x/text v0.39.0 // indirect
 	golang.org/x/time v0.3.0 // indirect
 	gomodules.xyz/jsonpatch/v2 v2.4.0 // indirect
 	google.golang.org/appengine v1.6.7 // indirect
