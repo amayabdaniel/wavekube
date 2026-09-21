@@ -31,7 +31,14 @@ func main() {
 	var probeAddr string
 	var enableLeaderElection bool
 
-	flag.StringVar(&metricsAddr, "metrics-bind-address", ":8080", "The address the metric endpoint binds to.")
+	// Default the metrics endpoint to loopback: previously it bound 0.0.0.0:8080
+	// as plaintext, anonymous HTTP, so any pod or host that could reach the pod IP
+	// scraped operator metrics unauthenticated. Binding 127.0.0.1 restricts it to
+	// the pod's own network namespace, closing remote anonymous access with no new
+	// dependencies. Nothing scrapes it today (no Service/ServiceMonitor is wired).
+	// When Prometheus is added, expose it via a kube-rbac-proxy sidecar or set
+	// controller-runtime's metrics FilterProvider (authn/authz) — see SECURITY_REVIEW.
+	flag.StringVar(&metricsAddr, "metrics-bind-address", "127.0.0.1:8080", "The address the metric endpoint binds to.")
 	flag.StringVar(&probeAddr, "health-probe-bind-address", ":8081", "The address the probe endpoint binds to.")
 	flag.BoolVar(&enableLeaderElection, "leader-elect", false, "Enable leader election for controller manager.")
 	flag.Parse()

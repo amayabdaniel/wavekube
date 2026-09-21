@@ -24,14 +24,18 @@ spec:
           image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
           imagePullPolicy: {{ .Values.image.pullPolicy }}
           args:
-            - --metrics-bind-address=:{{ .Values.metrics.port }}
+            # Bind metrics to loopback so it is not remotely scrapable
+            # unauthenticated. When Prometheus is wired, front it with a
+            # kube-rbac-proxy sidecar (or the controller-runtime metrics
+            # FilterProvider) rather than binding 0.0.0.0. See SECURITY_REVIEW.
+            - --metrics-bind-address=127.0.0.1:{{ .Values.metrics.port }}
             - --health-probe-bind-address=:{{ .Values.healthProbe.port }}
             {{- if .Values.leaderElection.enabled }}
             - --leader-elect
             {{- end }}
           ports:
-            - name: metrics
-              containerPort: {{ .Values.metrics.port }}
+            # metrics is loopback-only (see args); not published as a container
+            # port because nothing outside the pod can reach it.
             - name: health
               containerPort: {{ .Values.healthProbe.port }}
           livenessProbe:
