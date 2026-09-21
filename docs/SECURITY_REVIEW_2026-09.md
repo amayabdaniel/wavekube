@@ -8,7 +8,7 @@ exposure verdicts; fixed items cite the commit, deferred items say why.
 
 | # | Vector | Verdict | Action |
 |---|--------|---------|--------|
-| 1 | AuthN/AuthZ | partial (metrics) | documented (below) |
+| 1 | AuthN/AuthZ | **EXPOSED** (metrics) | **FIXED** `b823d17` — metrics bound to loopback |
 | 2 | Injection | not exposed | none needed |
 | 3 | Transport & secrets | not exposed | none needed (clean) |
 | 4 | Input handling & DoS | not exposed | none needed |
@@ -17,18 +17,26 @@ exposure verdicts; fixed items cite the commit, deferred items say why.
 | 7 | Concurrency & state | not exposed | none needed |
 | 8 | Infra & config | **EXPOSED** | **FIXED** `781a5f5` — RBAC least-privilege; workload hardening documented |
 
-## 1 — AuthN/AuthZ — partial (documented)
+## 1 — AuthN/AuthZ — FIXED (`b823d17`)
 
-The manager's **metrics endpoint binds `:8080` as plaintext HTTP with no authn/
-authz** — no `SecureServing`, no `FilterProvider`
-(`filters.WithAuthenticationAndAuthorization`). Anyone able to reach the pod port
-reads operator metrics anonymously. Health/readiness on `:8081` are anonymous by
-design (probe endpoints). No admission webhooks, no pprof. Fix: enable the
-controller-runtime metrics filter + serve over TLS, which also needs the
-`authentication.k8s.io`/`authorization.k8s.io` (tokenreviews/subjectaccessreviews)
-RBAC — a coupled change worth its own commit; recommended, not done this pass.
-CRD reconciliation itself is not tenant-scoped (cluster-scoped operator), which
-is normal for an operator.
+The manager's **metrics endpoint bound `0.0.0.0:8080` as plaintext HTTP with no
+authn/authz**, so any pod or host that could reach the pod IP scraped operator
+metrics anonymously. **Fixed by binding it to `127.0.0.1`** (code default +
+Helm `--metrics-bind-address=127.0.0.1:8080`, metrics containerPort unpublished),
+which restricts it to the pod's own network namespace — remote anonymous access
+closed with zero new dependencies and no functional loss, since nothing scrapes
+it today (no Service/ServiceMonitor is wired).
+
+**Deliberately chose loopback over the controller-runtime FilterProvider**
+(`filters.WithAuthenticationAndAuthorization` + `SecureServing`): that path pulls
+~15 transitive modules (`k8s.io/apiserver`, `component-base`, `cel-go`, otel,
+grpc, apiserver-network-proxy) and adds `tokenreviews`/`subjectaccessreviews`
+RBAC, all to authenticate scrapes that nothing performs yet — a supply-chain
+surface increase for an unused capability, which cuts against the rest of this
+pass. **Follow-up when Prometheus is wired:** front metrics with a kube-rbac-proxy
+sidecar, or enable the FilterProvider + its RBAC then. Health/readiness on `:8081`
+are anonymous by design (probe endpoints). No admission webhooks, no pprof. CRD
+reconciliation is cluster-scoped, normal for an operator.
 
 ## 2 — Injection — NOT EXPOSED
 
@@ -105,7 +113,9 @@ least privilege verified via `helm template`.
   fronthaul peer could break real eCPRI traffic from an external/hostNetwork O-RU;
   it needs validation against the actual fronthaul topology.
 
-**Front fixed here: 5 and 8. Deferred with reasons: 1 (metrics auth — coupled to
-new RBAC, own commit), and the workload securityContext / NetworkPolicy-peer
-items under 8 — each a functional trade-off (RDMA capabilities, fronthaul reach)
-that must be validated against the RAN topology rather than removed blind.**
+**Fronts fixed: 1 (metrics loopback `b823d17`), 5 (supply chain `ecaddfc`), 8
+(RBAC least-privilege `781a5f5`). Deferred with reasons: the workload
+securityContext / NetworkPolicy-peer items under 8 — each a functional trade-off
+(RDMA capabilities, fronthaul reach) that must be validated against the RAN
+topology rather than removed blind; and scrape-time metrics authz, which waits on
+Prometheus actually being wired (see vector 1).**
