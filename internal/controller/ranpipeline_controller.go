@@ -204,12 +204,12 @@ func (r *RANPipelineReconciler) buildJob(pipeline *ranv1alpha1.RANPipeline, gnb 
 							},
 							Resources: corev1.ResourceRequirements{
 								Limits: corev1.ResourceList{
-									"nvidia.com/gpu":  gpuQty,
+									"nvidia.com/gpu":      gpuQty,
 									corev1.ResourceMemory: memQty,
 									corev1.ResourceCPU:    cpuQty,
 								},
 								Requests: corev1.ResourceList{
-									"nvidia.com/gpu":  gpuQty,
+									"nvidia.com/gpu":      gpuQty,
 									corev1.ResourceMemory: memQty,
 									corev1.ResourceCPU:    cpuQty,
 								},

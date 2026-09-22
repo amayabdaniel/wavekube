@@ -150,10 +150,10 @@ type RANPipelineSpec struct {
 }
 
 type PipelineResources struct {
-	GPUCount   int32  `json:"gpuCount,omitempty"`
-	MemoryMi   int32  `json:"memoryMi,omitempty"`
-	CPUCores   int32  `json:"cpuCores,omitempty"`
-	GPUType    string `json:"gpuType,omitempty"`
+	GPUCount int32  `json:"gpuCount,omitempty"`
+	MemoryMi int32  `json:"memoryMi,omitempty"`
+	CPUCores int32  `json:"cpuCores,omitempty"`
+	GPUType  string `json:"gpuType,omitempty"`
 }
 
 type RANPipelineStatus struct {
@@ -219,7 +219,7 @@ type RANSecurityPolicySpec struct {
 
 type RANSecurityPolicyStatus struct {
 	// Compliant indicates if all referenced GNodeBs meet this policy.
-	Compliant  bool               `json:"compliant,omitempty"`
+	Compliant  bool                `json:"compliant,omitempty"`
 	Violations []SecurityViolation `json:"violations,omitempty"`
 	Conditions []metav1.Condition  `json:"conditions,omitempty"`
 }

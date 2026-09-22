@@ -187,12 +187,12 @@ func desiredFronthaulPolicySpec() networkingv1.NetworkPolicySpec {
 			networkingv1.PolicyTypeEgress,
 		},
 		Ingress: []networkingv1.NetworkPolicyIngressRule{
-			{Ports: []networkingv1.NetworkPolicyPort{{Port: &fronthaulPort, Protocol: &proto}}}, // fronthaul eCPRI
+			{Ports: []networkingv1.NetworkPolicyPort{{Port: &fronthaulPort, Protocol: &proto}}},                                                               // fronthaul eCPRI
 			{Ports: []networkingv1.NetworkPolicyPort{{Port: &intstr.IntOrString{Type: intstr.Int, IntVal: 9090}, Protocol: protocolPtr(corev1.ProtocolTCP)}}}, // metrics
 		},
 		Egress: []networkingv1.NetworkPolicyEgressRule{
 			{Ports: []networkingv1.NetworkPolicyPort{{Port: &intstr.IntOrString{Type: intstr.Int, IntVal: 53}, Protocol: protocolPtr(corev1.ProtocolUDP)}}}, // DNS
-			{Ports: []networkingv1.NetworkPolicyPort{{Port: &fronthaulPort, Protocol: &proto}}}, // fronthaul eCPRI egress
+			{Ports: []networkingv1.NetworkPolicyPort{{Port: &fronthaulPort, Protocol: &proto}}},                                                             // fronthaul eCPRI egress
 		},
 	}
 }

@@ -18,14 +18,18 @@ func (in *GNodeB) DeepCopyInto(out *GNodeB) {
 }
 
 func (in *GNodeB) DeepCopy() *GNodeB {
-	if in == nil { return nil }
+	if in == nil {
+		return nil
+	}
 	out := new(GNodeB)
 	in.DeepCopyInto(out)
 	return out
 }
 
 func (in *GNodeB) DeepCopyObject() runtime.Object {
-	if c := in.DeepCopy(); c != nil { return c }
+	if c := in.DeepCopy(); c != nil {
+		return c
+	}
 	return nil
 }
 
@@ -36,19 +40,25 @@ func (in *GNodeBList) DeepCopyInto(out *GNodeBList) {
 	if in.Items != nil {
 		in, out := &in.Items, &out.Items
 		*out = make([]GNodeB, len(*in))
-		for i := range *in { (*in)[i].DeepCopyInto(&(*out)[i]) }
+		for i := range *in {
+			(*in)[i].DeepCopyInto(&(*out)[i])
+		}
 	}
 }
 
 func (in *GNodeBList) DeepCopy() *GNodeBList {
-	if in == nil { return nil }
+	if in == nil {
+		return nil
+	}
 	out := new(GNodeBList)
 	in.DeepCopyInto(out)
 	return out
 }
 
 func (in *GNodeBList) DeepCopyObject() runtime.Object {
-	if c := in.DeepCopy(); c != nil { return c }
+	if c := in.DeepCopy(); c != nil {
+		return c
+	}
 	return nil
 }
 
@@ -60,7 +70,9 @@ func (in *GNodeBSpec) DeepCopyInto(out *GNodeBSpec) {
 }
 
 func (in *GNodeBSpec) DeepCopy() *GNodeBSpec {
-	if in == nil { return nil }
+	if in == nil {
+		return nil
+	}
 	out := new(GNodeBSpec)
 	in.DeepCopyInto(out)
 	return out
@@ -76,48 +88,62 @@ func (in *GNodeBStatus) DeepCopyInto(out *GNodeBStatus) {
 	if in.Conditions != nil {
 		in, out := &in.Conditions, &out.Conditions
 		*out = make([]metav1.Condition, len(*in))
-		for i := range *in { (*in)[i].DeepCopyInto(&(*out)[i]) }
+		for i := range *in {
+			(*in)[i].DeepCopyInto(&(*out)[i])
+		}
 	}
 	out.Metrics = in.Metrics
 }
 
 func (in *GNodeBStatus) DeepCopy() *GNodeBStatus {
-	if in == nil { return nil }
+	if in == nil {
+		return nil
+	}
 	out := new(GNodeBStatus)
 	in.DeepCopyInto(out)
 	return out
 }
 
 func (in *GPUResourceSpec) DeepCopy() *GPUResourceSpec {
-	if in == nil { return nil }
+	if in == nil {
+		return nil
+	}
 	out := new(GPUResourceSpec)
 	*out = *in
 	return out
 }
 
 func (in *GPUInstanceStatus) DeepCopy() *GPUInstanceStatus {
-	if in == nil { return nil }
+	if in == nil {
+		return nil
+	}
 	out := new(GPUInstanceStatus)
 	*out = *in
 	return out
 }
 
 func (in *PHYConfig) DeepCopy() *PHYConfig {
-	if in == nil { return nil }
+	if in == nil {
+		return nil
+	}
 	out := new(PHYConfig)
 	*out = *in
 	return out
 }
 
 func (in *NetworkConfig) DeepCopy() *NetworkConfig {
-	if in == nil { return nil }
+	if in == nil {
+		return nil
+	}
 	out := new(NetworkConfig)
 	*out = *in
 	return out
 }
 
 func (in *RANMetrics) DeepCopy() *RANMetrics {
-	if in == nil { return nil }
+	if in == nil {
+		return nil
+	}
 	out := new(RANMetrics)
 	*out = *in
 	return out
@@ -132,14 +158,18 @@ func (in *RANPipeline) DeepCopyInto(out *RANPipeline) {
 }
 
 func (in *RANPipeline) DeepCopy() *RANPipeline {
-	if in == nil { return nil }
+	if in == nil {
+		return nil
+	}
 	out := new(RANPipeline)
 	in.DeepCopyInto(out)
 	return out
 }
 
 func (in *RANPipeline) DeepCopyObject() runtime.Object {
-	if c := in.DeepCopy(); c != nil { return c }
+	if c := in.DeepCopy(); c != nil {
+		return c
+	}
 	return nil
 }
 
@@ -150,24 +180,32 @@ func (in *RANPipelineList) DeepCopyInto(out *RANPipelineList) {
 	if in.Items != nil {
 		in, out := &in.Items, &out.Items
 		*out = make([]RANPipeline, len(*in))
-		for i := range *in { (*in)[i].DeepCopyInto(&(*out)[i]) }
+		for i := range *in {
+			(*in)[i].DeepCopyInto(&(*out)[i])
+		}
 	}
 }
 
 func (in *RANPipelineList) DeepCopy() *RANPipelineList {
-	if in == nil { return nil }
+	if in == nil {
+		return nil
+	}
 	out := new(RANPipelineList)
 	in.DeepCopyInto(out)
 	return out
 }
 
 func (in *RANPipelineList) DeepCopyObject() runtime.Object {
-	if c := in.DeepCopy(); c != nil { return c }
+	if c := in.DeepCopy(); c != nil {
+		return c
+	}
 	return nil
 }
 
 func (in *RANPipelineSpec) DeepCopy() *RANPipelineSpec {
-	if in == nil { return nil }
+	if in == nil {
+		return nil
+	}
 	out := new(RANPipelineSpec)
 	*out = *in
 	out.Resources = in.Resources
@@ -179,19 +217,25 @@ func (in *RANPipelineStatus) DeepCopyInto(out *RANPipelineStatus) {
 	if in.Conditions != nil {
 		in, out := &in.Conditions, &out.Conditions
 		*out = make([]metav1.Condition, len(*in))
-		for i := range *in { (*in)[i].DeepCopyInto(&(*out)[i]) }
+		for i := range *in {
+			(*in)[i].DeepCopyInto(&(*out)[i])
+		}
 	}
 }
 
 func (in *RANPipelineStatus) DeepCopy() *RANPipelineStatus {
-	if in == nil { return nil }
+	if in == nil {
+		return nil
+	}
 	out := new(RANPipelineStatus)
 	in.DeepCopyInto(out)
 	return out
 }
 
 func (in *PipelineResources) DeepCopy() *PipelineResources {
-	if in == nil { return nil }
+	if in == nil {
+		return nil
+	}
 	out := new(PipelineResources)
 	*out = *in
 	return out
@@ -206,14 +250,18 @@ func (in *RANSecurityPolicy) DeepCopyInto(out *RANSecurityPolicy) {
 }
 
 func (in *RANSecurityPolicy) DeepCopy() *RANSecurityPolicy {
-	if in == nil { return nil }
+	if in == nil {
+		return nil
+	}
 	out := new(RANSecurityPolicy)
 	in.DeepCopyInto(out)
 	return out
 }
 
 func (in *RANSecurityPolicy) DeepCopyObject() runtime.Object {
-	if c := in.DeepCopy(); c != nil { return c }
+	if c := in.DeepCopy(); c != nil {
+		return c
+	}
 	return nil
 }
 
@@ -224,19 +272,25 @@ func (in *RANSecurityPolicyList) DeepCopyInto(out *RANSecurityPolicyList) {
 	if in.Items != nil {
 		in, out := &in.Items, &out.Items
 		*out = make([]RANSecurityPolicy, len(*in))
-		for i := range *in { (*in)[i].DeepCopyInto(&(*out)[i]) }
+		for i := range *in {
+			(*in)[i].DeepCopyInto(&(*out)[i])
+		}
 	}
 }
 
 func (in *RANSecurityPolicyList) DeepCopy() *RANSecurityPolicyList {
-	if in == nil { return nil }
+	if in == nil {
+		return nil
+	}
 	out := new(RANSecurityPolicyList)
 	in.DeepCopyInto(out)
 	return out
 }
 
 func (in *RANSecurityPolicyList) DeepCopyObject() runtime.Object {
-	if c := in.DeepCopy(); c != nil { return c }
+	if c := in.DeepCopy(); c != nil {
+		return c
+	}
 	return nil
 }
 
@@ -250,7 +304,9 @@ func (in *RANSecurityPolicySpec) DeepCopyInto(out *RANSecurityPolicySpec) {
 }
 
 func (in *RANSecurityPolicySpec) DeepCopy() *RANSecurityPolicySpec {
-	if in == nil { return nil }
+	if in == nil {
+		return nil
+	}
 	out := new(RANSecurityPolicySpec)
 	in.DeepCopyInto(out)
 	return out
@@ -266,19 +322,25 @@ func (in *RANSecurityPolicyStatus) DeepCopyInto(out *RANSecurityPolicyStatus) {
 	if in.Conditions != nil {
 		in, out := &in.Conditions, &out.Conditions
 		*out = make([]metav1.Condition, len(*in))
-		for i := range *in { (*in)[i].DeepCopyInto(&(*out)[i]) }
+		for i := range *in {
+			(*in)[i].DeepCopyInto(&(*out)[i])
+		}
 	}
 }
 
 func (in *RANSecurityPolicyStatus) DeepCopy() *RANSecurityPolicyStatus {
-	if in == nil { return nil }
+	if in == nil {
+		return nil
+	}
 	out := new(RANSecurityPolicyStatus)
 	in.DeepCopyInto(out)
 	return out
 }
 
 func (in *SecurityViolation) DeepCopy() *SecurityViolation {
-	if in == nil { return nil }
+	if in == nil {
+		return nil
+	}
 	out := new(SecurityViolation)
 	*out = *in
 	return out
