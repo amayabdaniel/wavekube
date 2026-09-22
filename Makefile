@@ -69,8 +69,14 @@ vet:
 	go vet ./...
 
 .PHONY: generate
+# NOTE: api/v1alpha1/zz_generated.deepcopy.go is kept gofmt-canonical (ecf51c1).
+# If a `make generate` here re-emits it with condensed single-line control flow
+# (`if in == nil { return nil }` on one line) and leaves the file dirty, the
+# GENERATOR is the thing to fix, not the file — pin/upgrade controller-gen and
+# `gofmt -w` its output, don't reformat by hand each time (that loops forever).
 generate:
 	controller-gen object paths="./api/..."
+	gofmt -w ./api
 	controller-gen crd paths="./api/..." output:crd:artifacts:config=config/crd/bases
 
 .PHONY: kind-setup
