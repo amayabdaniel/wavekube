@@ -54,7 +54,8 @@ func (r *GNodeBReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 	}
 
 	// Reconcile the Deployment for this GNodeB
-	if err := r.reconcileDeployment(ctx, gnb); err != nil {
+	deploy, err := r.reconcileDeployment(ctx, gnb)
+	if err != nil {
 		gnb.Status.Phase = "Failed"
 		_ = r.Status().Update(ctx, gnb)
 		return ctrl.Result{}, err
@@ -72,16 +73,25 @@ func (r *GNodeBReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 		}
 	}
 
-	// Update status
-	gnb.Status.Phase = "Running"
+	// Reflect the Deployment's ACTUAL readiness rather than reporting Running the
+	// moment the Deployment object exists (see gnodebPhaseFromDeployment).
+	phase, progressing := gnodebPhaseFromDeployment(deploy, gnb.Spec.Replicas)
+	gnb.Status.Phase = phase
 	if err := r.Status().Update(ctx, gnb); err != nil {
 		return ctrl.Result{}, err
 	}
 
+	// Requeue while the rollout is still progressing so status converges rather
+	// than freezing at the last reconcile (10s, matching ranpipeline_controller.go).
+	if progressing {
+		return ctrl.Result{RequeueAfter: 10e9}, nil
+	}
 	return ctrl.Result{}, nil
 }
 
-func (r *GNodeBReconciler) reconcileDeployment(ctx context.Context, gnb *ranv1alpha1.GNodeB) error {
+// reconcileDeployment ensures the RAN Deployment exists and returns it so the
+// caller can derive the GNodeB phase from its actual status.
+func (r *GNodeBReconciler) reconcileDeployment(ctx context.Context, gnb *ranv1alpha1.GNodeB) (*appsv1.Deployment, error) {
 	deploy := &appsv1.Deployment{}
 	deployName := types.NamespacedName{Name: gnb.Name + "-ran", Namespace: gnb.Namespace}
 
@@ -89,18 +99,43 @@ func (r *GNodeBReconciler) reconcileDeployment(ctx context.Context, gnb *ranv1al
 	if errors.IsNotFound(err) {
 		deploy = r.buildDeployment(gnb)
 		if err := ctrl.SetControllerReference(gnb, deploy, r.Scheme); err != nil {
-			return err
+			return nil, err
 		}
-		return r.Create(ctx, deploy)
+		if err := r.Create(ctx, deploy); err != nil {
+			return nil, err
+		}
+		return deploy, nil
 	}
 	if err != nil {
-		return err
+		return nil, err
 	}
 
 	// Update existing deployment if spec changed
 	deploy.Spec.Replicas = &gnb.Spec.Replicas
 	deploy.Spec.Template.Spec.Containers[0].Image = gnb.Spec.Image
-	return r.Update(ctx, deploy)
+	if err := r.Update(ctx, deploy); err != nil {
+		return nil, err
+	}
+	return deploy, nil
+}
+
+// gnodebPhaseFromDeployment maps the owned Deployment's observed status to the
+// GNodeB phase. A cell is Running only when its Deployment actually has all
+// replicas ready — reporting Running just because the Deployment object exists
+// (as this controller did before) is a status that asserts something nothing
+// verified: an operator debugging a CrashLooping cell would start from a false
+// "healthy". A rollout that blew its progress deadline is surfaced as Failed;
+// otherwise it is still Progressing.
+func gnodebPhaseFromDeployment(deploy *appsv1.Deployment, desired int32) (phase string, progressing bool) {
+	for _, c := range deploy.Status.Conditions {
+		if c.Type == appsv1.DeploymentProgressing && c.Status == corev1.ConditionFalse && c.Reason == "ProgressDeadlineExceeded" {
+			return "Failed", false
+		}
+	}
+	if deploy.Status.ReadyReplicas >= desired {
+		return "Running", false
+	}
+	return "Progressing", true
 }
 
 func (r *GNodeBReconciler) buildDeployment(gnb *ranv1alpha1.GNodeB) *appsv1.Deployment {

@@ -29,10 +29,10 @@ func gnbScheme(t *testing.T) *runtime.Scheme {
 }
 
 // Effect check: reconciling a GNodeB must actually CREATE the RAN Deployment
-// (named <gnb>-ran) via the reconciler and reflect Running in status. The prior
-// version of this test set spec fields on a literal and asserted them back
-// without ever calling Reconcile — it could not fail regardless of controller
-// behaviour; this exercises the real reconcile path.
+// (named <gnb>-ran) via the reconciler. A freshly created Deployment has no ready
+// replicas yet, so the honest phase is Progressing (not Running) and the reconcile
+// requeues to converge. The prior version of this test set spec fields on a
+// literal and asserted them back without ever calling Reconcile.
 func TestGNodeBReconcile_CreatesDeployment(t *testing.T) {
 	scheme := gnbScheme(t)
 	gnb := &ranv1alpha1.GNodeB{
@@ -48,9 +48,10 @@ func TestGNodeBReconcile_CreatesDeployment(t *testing.T) {
 	c := fake.NewClientBuilder().WithScheme(scheme).WithObjects(gnb).WithStatusSubresource(gnb).Build()
 	r := &GNodeBReconciler{Client: c, Scheme: scheme}
 
-	if _, err := r.Reconcile(context.Background(), reconcile.Request{
+	res, err := r.Reconcile(context.Background(), reconcile.Request{
 		NamespacedName: types.NamespacedName{Name: "test-gnb", Namespace: "default"},
-	}); err != nil {
+	})
+	if err != nil {
 		t.Fatalf("reconcile: %v", err)
 	}
 
@@ -66,8 +67,77 @@ func TestGNodeBReconcile_CreatesDeployment(t *testing.T) {
 	if err := c.Get(context.Background(), types.NamespacedName{Name: "test-gnb", Namespace: "default"}, got); err != nil {
 		t.Fatalf("get gnb: %v", err)
 	}
+	if got.Status.Phase != "Progressing" {
+		t.Errorf("status phase = %q, want Progressing (0 replicas ready on a fresh create)", got.Status.Phase)
+	}
+	if res.RequeueAfter == 0 {
+		t.Error("a progressing GNodeB should requeue to converge, got no requeue")
+	}
+}
+
+// The wrong-STATE fix: a GNodeB must NOT report Running while its Deployment has
+// 0/N replicas ready — the controller previously set Phase=Running the moment the
+// Deployment object existed, so an operator debugging a CrashLooping cell saw a
+// false "healthy". Running only when ReadyReplicas == desired.
+func TestGNodeBReconcile_RunningOnlyWhenReplicasReady(t *testing.T) {
+	scheme := gnbScheme(t)
+	newGNB := func(name string, replicas int32) *ranv1alpha1.GNodeB {
+		return &ranv1alpha1.GNodeB{
+			ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: "default"},
+			Spec:       ranv1alpha1.GNodeBSpec{Image: "nvcr.io/nvidia/aerial/aerial-ran:24.3", Replicas: replicas},
+		}
+	}
+	// One container so the reconciler's spec-update path (Containers[0].Image) is valid.
+	withContainer := appsv1.DeploymentSpec{
+		Template: corev1.PodTemplateSpec{
+			Spec: corev1.PodSpec{Containers: []corev1.Container{{Name: "aerial-ran", Image: "old"}}},
+		},
+	}
+	// A Deployment that already exists but has 0/2 ready.
+	notReady := &appsv1.Deployment{
+		ObjectMeta: metav1.ObjectMeta{Name: "cold-ran", Namespace: "default"},
+		Spec:       withContainer,
+		Status:     appsv1.DeploymentStatus{ReadyReplicas: 0},
+	}
+	// A Deployment with all replicas ready.
+	ready := &appsv1.Deployment{
+		ObjectMeta: metav1.ObjectMeta{Name: "hot-ran", Namespace: "default"},
+		Spec:       withContainer,
+		Status:     appsv1.DeploymentStatus{ReadyReplicas: 2},
+	}
+
+	cold := newGNB("cold", 2)
+	hot := newGNB("hot", 2)
+	c := fake.NewClientBuilder().WithScheme(scheme).
+		WithObjects(cold, hot, notReady, ready).
+		WithStatusSubresource(cold, hot).Build()
+	r := &GNodeBReconciler{Client: c, Scheme: scheme}
+
+	// 0/2 ready → must NOT be Running, and must requeue.
+	res, err := r.Reconcile(context.Background(), reconcile.Request{NamespacedName: types.NamespacedName{Name: "cold", Namespace: "default"}})
+	if err != nil {
+		t.Fatalf("reconcile cold: %v", err)
+	}
+	got := &ranv1alpha1.GNodeB{}
+	_ = c.Get(context.Background(), types.NamespacedName{Name: "cold", Namespace: "default"}, got)
+	if got.Status.Phase == "Running" {
+		t.Fatalf("GNodeB with 0/2 ready replicas must not report Running")
+	}
+	if res.RequeueAfter == 0 {
+		t.Error("a not-ready GNodeB should requeue")
+	}
+
+	// 2/2 ready → Running, no requeue.
+	res, err = r.Reconcile(context.Background(), reconcile.Request{NamespacedName: types.NamespacedName{Name: "hot", Namespace: "default"}})
+	if err != nil {
+		t.Fatalf("reconcile hot: %v", err)
+	}
+	_ = c.Get(context.Background(), types.NamespacedName{Name: "hot", Namespace: "default"}, got)
 	if got.Status.Phase != "Running" {
-		t.Errorf("status phase = %q, want Running", got.Status.Phase)
+		t.Fatalf("GNodeB with 2/2 ready replicas should be Running, got %q", got.Status.Phase)
+	}
+	if res.RequeueAfter != 0 {
+		t.Errorf("a ready GNodeB should not requeue on a timer, got %v", res.RequeueAfter)
 	}
 }
 
