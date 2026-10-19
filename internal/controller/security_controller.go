@@ -93,8 +93,14 @@ func (r *RANSecurityPolicyReconciler) Reconcile(ctx context.Context, req ctrl.Re
 		}
 	}
 
-	// Update status
-	policy.Status.Compliant = len(violations) == 0
+	// Controls the operator asked for that this controller has no implementation
+	// for. A permanent gap, not a transient failure — see unenforceableControls.
+	unenforceable := unenforceableControls(policy.Spec)
+
+	// Update status. Compliance can only be asserted over controls that were
+	// actually evaluated: with an unenforceable control requested, the audit has no
+	// basis to claim the policy is satisfied, so it must not claim it.
+	policy.Status.Compliant = len(violations) == 0 && len(unenforceable) == 0
 	policy.Status.Violations = violations
 	setCondition(&policy.Status.Conditions, metav1.Condition{
 		Type:               "Audited",
@@ -107,12 +113,24 @@ func (r *RANSecurityPolicyReconciler) Reconcile(ctx context.Context, req ctrl.Re
 	// Enforced reflects whether the requested controls were actually applied.
 	// A security policy that reports compliant/audited while its NetworkPolicy or
 	// Falco rules failed to apply is the dangerous case — surface it.
-	enforced := len(enforceErrs) == 0
+	// A control this controller cannot enforce at all is the same lie told more
+	// quietly, so it lands in the same condition rather than passing as applied.
+	problems := append([]string(nil), enforceErrs...)
+	if len(unenforceable) > 0 {
+		problems = append(problems, "no implementation for: "+strings.Join(unenforceable, ", "))
+	}
+	enforced := len(problems) == 0
 	enforcedStatus := metav1.ConditionTrue
 	reason, msg := "ControlsApplied", "Requested security controls applied"
 	if !enforced {
 		enforcedStatus = metav1.ConditionFalse
-		reason, msg = "EnforcementFailed", "Enforcement incomplete: "+strings.Join(enforceErrs, "; ")
+		// An apply failure is the more urgent of the two and is retryable, so it
+		// names the reason when both are present.
+		reason = "ControlsUnimplemented"
+		if len(enforceErrs) > 0 {
+			reason = "EnforcementFailed"
+		}
+		msg = "Enforcement incomplete: " + strings.Join(problems, "; ")
 	}
 	setCondition(&policy.Status.Conditions, metav1.Condition{
 		Type:               "Enforced",
@@ -126,9 +144,11 @@ func (r *RANSecurityPolicyReconciler) Reconcile(ctx context.Context, req ctrl.Re
 		return ctrl.Result{}, err
 	}
 
-	// If a control failed to apply, surface it (fail closed) so it requeues with
-	// backoff rather than sitting green for 60s claiming controls it doesn't have.
-	if !enforced {
+	// A control that failed to APPLY is retryable: fail closed and requeue with
+	// backoff rather than sitting green for 60s. A control with no implementation is
+	// not retryable — no amount of backoff produces one — so it is reported in
+	// status and left to the normal re-audit cadence instead of hot-looping.
+	if len(enforceErrs) > 0 {
 		return ctrl.Result{}, fmt.Errorf("enforcement incomplete: %s", strings.Join(enforceErrs, "; "))
 	}
 
@@ -169,6 +189,36 @@ func (r *RANSecurityPolicyReconciler) auditGNodeB(gnb *ranv1alpha1.GNodeB, polic
 	}
 
 	return violations
+}
+
+// unenforceableControls returns the controls a policy requests that this
+// controller has no implementation for. Requesting one is not an operator error,
+// it is a gap here — but it must never be reported as applied: an operator who
+// sets seccompProfile, reads back Enforced=True/ControlsApplied and concludes a
+// seccomp profile is in force has been told something untrue by this code.
+//
+// Unlike a failure to apply, a missing implementation is permanent, so callers
+// report it WITHOUT returning an error; requeueing with backoff cannot close a
+// gap that only new code closes.
+//
+// Every field of RANSecurityPolicySpec must be either implemented by this
+// controller or listed here. TestRANSecurityPolicySpec_EveryFieldIsClassified
+// fails if a new field is neither.
+func unenforceableControls(spec ranv1alpha1.RANSecurityPolicySpec) []string {
+	var out []string
+	if spec.ImageScanningEnabled {
+		out = append(out, "imageScanningEnabled")
+	}
+	if spec.MaxCVSSScore > 0 {
+		out = append(out, "maxCVSSScore")
+	}
+	if spec.SeccompProfile != "" {
+		out = append(out, "seccompProfile")
+	}
+	if spec.EncryptFronthaul {
+		out = append(out, "encryptFronthaul")
+	}
+	return out
 }
 
 // desiredFronthaulPolicySpec is the single source of truth for the isolation
