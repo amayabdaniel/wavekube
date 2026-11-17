@@ -197,6 +197,65 @@ func TestSecurityReconcile_NetworkPolicyDriftIsCorrected(t *testing.T) {
 	}
 }
 
+// The Falco mirror of the NetworkPolicy drift case: a rules ConfigMap that EXISTS
+// but was edited to drop the real detections must be restored to the required
+// ruleset. reconcileFalcoRules was create-only — it returned without touching an
+// existing ConfigMap — so a weakened ruleset was never corrected, a control
+// trivially defeated by editing it. Effect-check: seed a gutted ConfigMap,
+// reconcile, assert the real rules are back and the correction is surfaced.
+func TestSecurityReconcile_FalcoRulesDriftIsCorrected(t *testing.T) {
+	scheme := secScheme(t)
+	policy := &ranv1alpha1.RANSecurityPolicy{
+		ObjectMeta: metav1.ObjectMeta{Name: "pol", Namespace: "default"},
+		Spec:       ranv1alpha1.RANSecurityPolicySpec{NetworkIsolation: false, RuntimeMonitoring: true},
+	}
+	// A gutted rules ConfigMap already in the cluster: the real detections removed,
+	// i.e. runtime monitoring effectively disabled while still looking present.
+	drifted := &corev1.ConfigMap{
+		ObjectMeta: metav1.ObjectMeta{Name: "pol-falco-rules", Namespace: "default"},
+		Data:       map[string]string{"wavekube_rules.yaml": "- rule: placeholder\n  condition: never\n"},
+	}
+	c := fake.NewClientBuilder().WithScheme(scheme).
+		WithObjects(policy, drifted).
+		WithStatusSubresource(policy).
+		Build()
+
+	r := &RANSecurityPolicyReconciler{Client: c, Scheme: scheme}
+	if _, err := r.Reconcile(context.Background(), ctrl.Request{NamespacedName: types.NamespacedName{Namespace: "default", Name: "pol"}}); err != nil {
+		t.Fatalf("reconcile: %v", err)
+	}
+
+	// Effect: the required rules must be restored, overwriting the gutted content.
+	cm := &corev1.ConfigMap{}
+	if e := c.Get(context.Background(), types.NamespacedName{Namespace: "default", Name: "pol-falco-rules"}, cm); e != nil {
+		t.Fatalf("get cm: %v", e)
+	}
+	rules := cm.Data["wavekube_rules.yaml"]
+	for _, want := range []string{"Unauthorized GPU Memory Access in RAN", "Shell Spawned in RAN Container"} {
+		if !strings.Contains(rules, want) {
+			t.Errorf("drift not corrected: restored ruleset must contain %q; got %q", want, rules)
+		}
+	}
+	if strings.Contains(rules, "placeholder") {
+		t.Errorf("gutted content survived: %q", rules)
+	}
+	// Visibility: the correction must be recorded, not silent.
+	got := &ranv1alpha1.RANSecurityPolicy{}
+	_ = c.Get(context.Background(), types.NamespacedName{Namespace: "default", Name: "pol"}, got)
+	var found bool
+	for _, cond := range got.Status.Conditions {
+		if cond.Type == "FalcoRulesReconciled" {
+			found = true
+			if cond.Reason != "DriftCorrected" {
+				t.Fatalf("condition reason want DriftCorrected got %q", cond.Reason)
+			}
+		}
+	}
+	if !found {
+		t.Fatal("expected a FalcoRulesReconciled condition surfacing the correction")
+	}
+}
+
 // When controls apply cleanly, Enforced=True and the reconcile requeues normally.
 func TestSecurityReconcile_ControlsAppliedEnforcedTrue(t *testing.T) {
 	scheme := secScheme(t)

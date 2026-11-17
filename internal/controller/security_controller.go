@@ -10,7 +10,6 @@ import (
 	"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
-	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/intstr"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -85,11 +84,30 @@ func (r *RANSecurityPolicyReconciler) Reconcile(ctx context.Context, req ctrl.Re
 		}
 	}
 
-	// Reconcile Falco rules ConfigMap
+	// Reconcile the Falco rules ConfigMap by CONTENT, correcting drift like the NP path.
 	if policy.Spec.RuntimeMonitoring {
-		if err := r.reconcileFalcoRules(ctx, policy); err != nil {
+		op, err := r.reconcileFalcoRules(ctx, policy)
+		if err != nil {
 			logger.Error(err, "Failed to reconcile Falco rules")
 			enforceErrs = append(enforceErrs, "runtime monitoring: "+err.Error())
+		} else {
+			// Surface a drift correction so a weakened ruleset that was reverted is
+			// visible, not silent — the same contract as NetworkPolicyReconciled.
+			reason, fMsg := "InSync", "Falco rules match the required ruleset"
+			switch op {
+			case controllerutil.OperationResultCreated:
+				reason, fMsg = "Created", "Created the Falco rules ConfigMap"
+			case controllerutil.OperationResultUpdated:
+				reason, fMsg = "DriftCorrected", "Reverted out-of-band changes to the Falco rules ConfigMap"
+				logger.Info("corrected Falco rules drift", "policy", policy.Name)
+			}
+			setCondition(&policy.Status.Conditions, metav1.Condition{
+				Type:               "FalcoRulesReconciled",
+				Status:             metav1.ConditionTrue,
+				Reason:             reason,
+				Message:            fMsg,
+				LastTransitionTime: metav1.Now(),
+			})
 		}
 	}
 
@@ -269,22 +287,11 @@ func (r *RANSecurityPolicyReconciler) reconcileNetworkPolicies(ctx context.Conte
 	})
 }
 
-func (r *RANSecurityPolicyReconciler) reconcileFalcoRules(ctx context.Context, policy *ranv1alpha1.RANSecurityPolicy) error {
-	cm := &corev1.ConfigMap{}
-	cmName := types.NamespacedName{Name: policy.Name + "-falco-rules", Namespace: policy.Namespace}
-
-	err := r.Get(ctx, cmName, cm)
-	if err != nil && !errors.IsNotFound(err) {
-		// A non-NotFound Get error (RBAC Forbidden, API timeout) means we could not
-		// determine whether the Falco rules are installed. The previous code fell
-		// through to `return nil`, reporting RuntimeMonitoring as applied on a read
-		// it never completed — the fail-open hole the rest of this reconciler is
-		// careful to avoid (see the NetworkPolicy path and the Enforced condition).
-		// Surface it so it becomes an enforcement failure and requeues with backoff.
-		return fmt.Errorf("falco rules: %w", err)
-	}
-	if errors.IsNotFound(err) {
-		falcoRules := `- rule: Unauthorized GPU Memory Access in RAN
+// desiredFalcoRules is the single source of truth for the Falco ruleset, mirroring
+// desiredFronthaulPolicySpec. reconcileFalcoRules reconciles the ConfigMap's content
+// against it, so a rule weakened or dropped out-of-band is restored to this set.
+func desiredFalcoRules() string {
+	return `- rule: Unauthorized GPU Memory Access in RAN
   desc: Detect unauthorized access to GPU device files from non-RAN containers
   condition: >
     open_write and container and
@@ -328,27 +335,34 @@ func (r *RANSecurityPolicyReconciler) reconcileFalcoRules(ctx context.Context, p
     (user=%user.name shell=%proc.name container=%container.name)
   priority: CRITICAL
 `
+}
 
-		cm = &corev1.ConfigMap{
-			ObjectMeta: metav1.ObjectMeta{
-				Name:      cmName.Name,
-				Namespace: cmName.Namespace,
-				Labels: map[string]string{
-					"app.kubernetes.io/managed-by": "wavekube",
-					"falco.org/rules":              "true",
-				},
-			},
-			Data: map[string]string{
-				"wavekube_rules.yaml": falcoRules,
-			},
-		}
-		if err := ctrl.SetControllerReference(policy, cm, r.Scheme); err != nil {
-			return err
-		}
-		return r.Create(ctx, cm)
+// reconcileFalcoRules reconciles the Falco rules ConfigMap against desiredFalcoRules
+// by its CONTENT, not merely its existence — like reconcileNetworkPolicies. A rules
+// ConfigMap edited out-of-band to weaken or drop a rule is restored to the required
+// set, and the operation is returned so the caller can surface a drift correction.
+// CreateOrUpdate also surfaces a non-NotFound read error (fail closed) instead of
+// reporting the control applied on a read that never completed.
+func (r *RANSecurityPolicyReconciler) reconcileFalcoRules(ctx context.Context, policy *ranv1alpha1.RANSecurityPolicy) (controllerutil.OperationResult, error) {
+	cm := &corev1.ConfigMap{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      policy.Name + "-falco-rules",
+			Namespace: policy.Namespace,
+		},
 	}
-
-	return nil
+	return controllerutil.CreateOrUpdate(ctx, r.Client, cm, func() error {
+		if cm.Labels == nil {
+			cm.Labels = map[string]string{}
+		}
+		cm.Labels["app.kubernetes.io/managed-by"] = "wavekube"
+		cm.Labels["falco.org/rules"] = "true"
+		if cm.Data == nil {
+			cm.Data = map[string]string{}
+		}
+		// Restore the required ruleset — this reverts any out-of-band weakening.
+		cm.Data["wavekube_rules.yaml"] = desiredFalcoRules()
+		return ctrl.SetControllerReference(policy, cm, r.Scheme)
+	})
 }
 
 func protocolPtr(p corev1.Protocol) *corev1.Protocol { return &p }
