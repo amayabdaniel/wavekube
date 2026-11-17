@@ -223,7 +223,8 @@ func (r *GNodeBReconciler) reconcileService(ctx context.Context, gnb *ranv1alpha
 	svc := &corev1.Service{}
 	svcName := types.NamespacedName{Name: gnb.Name + "-metrics", Namespace: gnb.Namespace}
 
-	if err := r.Get(ctx, svcName, svc); errors.IsNotFound(err) {
+	err := r.Get(ctx, svcName, svc)
+	if errors.IsNotFound(err) {
 		svc = &corev1.Service{
 			ObjectMeta: metav1.ObjectMeta{
 				Name:      gnb.Name + "-metrics",
@@ -251,6 +252,14 @@ func (r *GNodeBReconciler) reconcileService(ctx context.Context, gnb *ranv1alpha
 			return err
 		}
 		return r.Create(ctx, svc)
+	}
+	// A non-NotFound Get error (API server unreachable, RBAC forbidden) must
+	// surface so Reconcile requeues instead of carrying on. Swallowing it with a
+	// bare `return nil` let the reconcile continue and set Phase=Running for a cell
+	// whose metrics Service was never verified — the exact fail-open reconcileDeployment
+	// above and reconcileFalcoRules in the security controller already avoid.
+	if err != nil {
+		return fmt.Errorf("gnodeb metrics service: %w", err)
 	}
 	return nil
 }

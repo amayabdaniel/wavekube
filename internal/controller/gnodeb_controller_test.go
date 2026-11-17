@@ -2,6 +2,7 @@ package controller
 
 import (
 	"context"
+	"errors"
 	"testing"
 
 	appsv1 "k8s.io/api/apps/v1"
@@ -9,7 +10,9 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	ranv1alpha1 "github.com/amayabdaniel/wavekube/api/v1alpha1"
@@ -138,6 +141,58 @@ func TestGNodeBReconcile_RunningOnlyWhenReplicasReady(t *testing.T) {
 	}
 	if res.RequeueAfter != 0 {
 		t.Errorf("a ready GNodeB should not requeue on a timer, got %v", res.RequeueAfter)
+	}
+}
+
+// A non-NotFound read error on the metrics Service must surface from Reconcile
+// (so the controller requeues), not be swallowed while the reconcile goes on to
+// report the cell healthy. reconcileService previously fell through a bare
+// `return nil` for any error that was not IsNotFound, so an API outage or an RBAC
+// denial while reading the Service left the GNodeB reporting Phase=Progressing/
+// Running off a reconcile that never verified its metrics Service existed. Every
+// other Get in this controller (and reconcileFalcoRules in the security one)
+// surfaces non-NotFound errors; this was the lone fail-open.
+func TestGNodeBReconcile_ServiceGetErrorSurfaces(t *testing.T) {
+	scheme := gnbScheme(t)
+	gnb := &ranv1alpha1.GNodeB{
+		ObjectMeta: metav1.ObjectMeta{Name: "test-gnb", Namespace: "default"},
+		Spec: ranv1alpha1.GNodeBSpec{
+			Image:     "nvcr.io/nvidia/aerial/aerial-ran:24.3",
+			Replicas:  1,
+			PHYConfig: ranv1alpha1.PHYConfig{Band: "n78"},
+		},
+	}
+	getErr := errors.New("service get: forbidden") // non-NotFound: IsNotFound==false
+	c := fake.NewClientBuilder().WithScheme(scheme).
+		WithObjects(gnb).
+		WithStatusSubresource(gnb).
+		WithInterceptorFuncs(interceptor.Funcs{
+			Get: func(ctx context.Context, cl client.WithWatch, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
+				// Fail only the metrics Service read; let the GNodeB and Deployment
+				// reads/creates earlier in Reconcile proceed so the failure is
+				// isolated to reconcileService.
+				if _, ok := obj.(*corev1.Service); ok && key.Name == "test-gnb-metrics" {
+					return getErr
+				}
+				return cl.Get(ctx, key, obj, opts...)
+			},
+		}).
+		Build()
+	r := &GNodeBReconciler{Client: c, Scheme: scheme}
+
+	_, err := r.Reconcile(context.Background(), reconcile.Request{
+		NamespacedName: types.NamespacedName{Name: "test-gnb", Namespace: "default"},
+	})
+	if err == nil {
+		t.Fatal("a non-NotFound metrics Service read error must surface from Reconcile, not be swallowed")
+	}
+
+	got := &ranv1alpha1.GNodeB{}
+	if e := c.Get(context.Background(), types.NamespacedName{Name: "test-gnb", Namespace: "default"}, got); e != nil {
+		t.Fatalf("get gnb: %v", e)
+	}
+	if got.Status.Phase == "Running" {
+		t.Fatalf("GNodeB must not report Running off a reconcile whose metrics Service read errored; got %q", got.Status.Phase)
 	}
 }
 
