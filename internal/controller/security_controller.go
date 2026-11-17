@@ -273,7 +273,17 @@ func (r *RANSecurityPolicyReconciler) reconcileFalcoRules(ctx context.Context, p
 	cm := &corev1.ConfigMap{}
 	cmName := types.NamespacedName{Name: policy.Name + "-falco-rules", Namespace: policy.Namespace}
 
-	if err := r.Get(ctx, cmName, cm); errors.IsNotFound(err) {
+	err := r.Get(ctx, cmName, cm)
+	if err != nil && !errors.IsNotFound(err) {
+		// A non-NotFound Get error (RBAC Forbidden, API timeout) means we could not
+		// determine whether the Falco rules are installed. The previous code fell
+		// through to `return nil`, reporting RuntimeMonitoring as applied on a read
+		// it never completed — the fail-open hole the rest of this reconciler is
+		// careful to avoid (see the NetworkPolicy path and the Enforced condition).
+		// Surface it so it becomes an enforcement failure and requeues with backoff.
+		return fmt.Errorf("falco rules: %w", err)
+	}
+	if errors.IsNotFound(err) {
 		falcoRules := `- rule: Unauthorized GPU Memory Access in RAN
   desc: Detect unauthorized access to GPU device files from non-RAN containers
   condition: >

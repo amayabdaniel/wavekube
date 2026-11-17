@@ -3,6 +3,7 @@ package controller
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 
 	corev1 "k8s.io/api/core/v1"
@@ -79,6 +80,58 @@ func TestSecurityReconcile_NetworkPolicyApplyFailureSurfaces(t *testing.T) {
 	}
 	if cond.Status != metav1.ConditionFalse {
 		t.Fatalf("Enforced want False when NetworkPolicy apply failed, got %q", cond.Status)
+	}
+}
+
+// The Falco path must fail CLOSED on a non-NotFound read error, exactly like the
+// NetworkPolicy path. reconcileFalcoRules created the rules ConfigMap only when
+// Get returned NotFound; any OTHER Get error (RBAC Forbidden, API timeout) fell
+// through to `return nil`, so RuntimeMonitoring reported Enforced=True/
+// ControlsApplied on a read that never completed — the fail-open case the rest of
+// this reconciler avoids. The policy requests only RuntimeMonitoring, so the Falco
+// reconcile is the sole enforcement step under test.
+func TestSecurityReconcile_FalcoRulesGetErrorSurfaces(t *testing.T) {
+	scheme := secScheme(t)
+	policy := &ranv1alpha1.RANSecurityPolicy{
+		ObjectMeta: metav1.ObjectMeta{Name: "pol", Namespace: "default"},
+		Spec:       ranv1alpha1.RANSecurityPolicySpec{NetworkIsolation: false, RuntimeMonitoring: true},
+	}
+	getErr := errors.New("configmap get: forbidden") // non-NotFound: IsNotFound==false
+	c := fake.NewClientBuilder().WithScheme(scheme).
+		WithObjects(policy).
+		WithStatusSubresource(policy).
+		WithInterceptorFuncs(interceptor.Funcs{
+			Get: func(ctx context.Context, cl client.WithWatch, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
+				if _, ok := obj.(*corev1.ConfigMap); ok && key.Name == "pol-falco-rules" {
+					return getErr
+				}
+				return cl.Get(ctx, key, obj, opts...)
+			},
+		}).
+		Build()
+
+	r := &RANSecurityPolicyReconciler{Client: c, Scheme: scheme}
+	_, err := r.Reconcile(context.Background(), ctrl.Request{NamespacedName: types.NamespacedName{Namespace: "default", Name: "pol"}})
+	if err == nil {
+		t.Fatal("a non-NotFound Falco ConfigMap read error must surface (requeue), not report controls applied")
+	}
+
+	got := &ranv1alpha1.RANSecurityPolicy{}
+	if e := c.Get(context.Background(), types.NamespacedName{Namespace: "default", Name: "pol"}, got); e != nil {
+		t.Fatalf("get: %v", e)
+	}
+	cond := enforcedCondition(got)
+	if cond == nil {
+		t.Fatal("status must carry an Enforced condition")
+	}
+	if cond.Status != metav1.ConditionFalse {
+		t.Fatalf("Enforced want False when the Falco read failed, got %q", cond.Status)
+	}
+	if cond.Reason != "EnforcementFailed" {
+		t.Fatalf("a retryable read/apply failure should name EnforcementFailed, got %q", cond.Reason)
+	}
+	if !strings.Contains(cond.Message, "runtime monitoring") {
+		t.Errorf("Enforced message must name the failing control; got %q", cond.Message)
 	}
 }
 
