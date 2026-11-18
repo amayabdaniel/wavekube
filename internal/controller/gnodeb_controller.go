@@ -11,8 +11,10 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/apimachinery/pkg/util/intstr"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 
 	ranv1alpha1 "github.com/amayabdaniel/wavekube/api/v1alpha1"
@@ -219,47 +221,53 @@ func (r *GNodeBReconciler) buildNodeSelector(gnb *ranv1alpha1.GNodeB) map[string
 	return selector
 }
 
+// reconcileService reconciles the metrics Service by its SPEC, not merely its
+// existence — like reconcileNetworkPolicies and reconcileFalcoRules in the
+// security controller. A Service whose selector, ports or scrape annotations were
+// edited out-of-band is corrected back to the required shape, so Prometheus keeps
+// discovering and scraping the cell; previously an existing Service was never
+// touched, so such drift stood uncorrected. CreateOrUpdate also surfaces a
+// non-NotFound read error (fail closed), preserving the guarantee ff8f789 added:
+// a reconcile that could not verify the Service does not report the cell healthy.
 func (r *GNodeBReconciler) reconcileService(ctx context.Context, gnb *ranv1alpha1.GNodeB) error {
-	svc := &corev1.Service{}
-	svcName := types.NamespacedName{Name: gnb.Name + "-metrics", Namespace: gnb.Namespace}
-
-	err := r.Get(ctx, svcName, svc)
-	if errors.IsNotFound(err) {
-		svc = &corev1.Service{
-			ObjectMeta: metav1.ObjectMeta{
-				Name:      gnb.Name + "-metrics",
-				Namespace: gnb.Namespace,
-				Labels: map[string]string{
-					"app.kubernetes.io/name":       "gnodeb",
-					"app.kubernetes.io/instance":   gnb.Name,
-					"app.kubernetes.io/managed-by": "wavekube",
-				},
-				Annotations: map[string]string{
-					"prometheus.io/scrape": "true",
-					"prometheus.io/port":   "9090",
-				},
-			},
-			Spec: corev1.ServiceSpec{
-				Selector: map[string]string{
-					"app.kubernetes.io/instance": gnb.Name,
-				},
-				Ports: []corev1.ServicePort{
-					{Name: "metrics", Port: 9090, Protocol: corev1.ProtocolTCP},
-				},
-			},
-		}
-		if err := ctrl.SetControllerReference(gnb, svc, r.Scheme); err != nil {
-			return err
-		}
-		return r.Create(ctx, svc)
+	svc := &corev1.Service{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      gnb.Name + "-metrics",
+			Namespace: gnb.Namespace,
+		},
 	}
-	// A non-NotFound Get error (API server unreachable, RBAC forbidden) must
-	// surface so Reconcile requeues instead of carrying on. Swallowing it with a
-	// bare `return nil` let the reconcile continue and set Phase=Running for a cell
-	// whose metrics Service was never verified — the exact fail-open reconcileDeployment
-	// above and reconcileFalcoRules in the security controller already avoid.
+	op, err := controllerutil.CreateOrUpdate(ctx, r.Client, svc, func() error {
+		if svc.Labels == nil {
+			svc.Labels = map[string]string{}
+		}
+		svc.Labels["app.kubernetes.io/name"] = "gnodeb"
+		svc.Labels["app.kubernetes.io/instance"] = gnb.Name
+		svc.Labels["app.kubernetes.io/managed-by"] = "wavekube"
+		if svc.Annotations == nil {
+			svc.Annotations = map[string]string{}
+		}
+		svc.Annotations["prometheus.io/scrape"] = "true"
+		svc.Annotations["prometheus.io/port"] = "9090"
+		// Restore the required selector/ports — this reverts any out-of-band edit
+		// that would stop Prometheus discovering the cell. TargetPort is set
+		// explicitly (not left to default) so a reconciled Service does not read as
+		// perpetually drifted against the server-defaulted value. ClusterIP and
+		// other server-populated fields are preserved: CreateOrUpdate mutates the
+		// fetched object and only these fields are set.
+		svc.Spec.Selector = map[string]string{"app.kubernetes.io/instance": gnb.Name}
+		svc.Spec.Ports = []corev1.ServicePort{{
+			Name:       "metrics",
+			Port:       9090,
+			Protocol:   corev1.ProtocolTCP,
+			TargetPort: intstr.FromInt(9090),
+		}}
+		return ctrl.SetControllerReference(gnb, svc, r.Scheme)
+	})
 	if err != nil {
 		return fmt.Errorf("gnodeb metrics service: %w", err)
+	}
+	if op == controllerutil.OperationResultUpdated {
+		log.FromContext(ctx).Info("corrected metrics Service drift", "gnodeb", gnb.Name)
 	}
 	return nil
 }

@@ -196,6 +196,57 @@ func TestGNodeBReconcile_ServiceGetErrorSurfaces(t *testing.T) {
 	}
 }
 
+// The metrics Service must be reconciled by CONTENT, not just created when
+// absent: a Service whose selector or ports were edited out-of-band (so Prometheus
+// no longer discovers/scrapes the cell) must be corrected back to the required
+// shape. reconcileService was previously create-only — it left an existing Service
+// untouched — so this drift stood. Effect-check: seed a drifted Service, reconcile,
+// assert it was restored. Mirrors TestSecurityReconcile_NetworkPolicyDriftIsCorrected.
+func TestGNodeBReconcile_ServiceDriftIsCorrected(t *testing.T) {
+	scheme := gnbScheme(t)
+	gnb := &ranv1alpha1.GNodeB{
+		ObjectMeta: metav1.ObjectMeta{Name: "test-gnb", Namespace: "default"},
+		Spec: ranv1alpha1.GNodeBSpec{
+			Image:     "nvcr.io/nvidia/aerial/aerial-ran:24.3",
+			Replicas:  1,
+			PHYConfig: ranv1alpha1.PHYConfig{Band: "n78"},
+		},
+	}
+	// A metrics Service that already exists but was edited out-of-band: a selector
+	// that points at the wrong instance and a changed port — Prometheus would no
+	// longer scrape this cell.
+	drifted := &corev1.Service{
+		ObjectMeta: metav1.ObjectMeta{Name: "test-gnb-metrics", Namespace: "default"},
+		Spec: corev1.ServiceSpec{
+			Selector: map[string]string{"app.kubernetes.io/instance": "someone-else"},
+			Ports: []corev1.ServicePort{
+				{Name: "metrics", Port: 1234, Protocol: corev1.ProtocolTCP},
+			},
+		},
+	}
+	c := fake.NewClientBuilder().WithScheme(scheme).
+		WithObjects(gnb, drifted).
+		WithStatusSubresource(gnb).Build()
+	r := &GNodeBReconciler{Client: c, Scheme: scheme}
+
+	if _, err := r.Reconcile(context.Background(), reconcile.Request{
+		NamespacedName: types.NamespacedName{Name: "test-gnb", Namespace: "default"},
+	}); err != nil {
+		t.Fatalf("reconcile: %v", err)
+	}
+
+	got := &corev1.Service{}
+	if err := c.Get(context.Background(), types.NamespacedName{Name: "test-gnb-metrics", Namespace: "default"}, got); err != nil {
+		t.Fatalf("get service: %v", err)
+	}
+	if got.Spec.Selector["app.kubernetes.io/instance"] != "test-gnb" {
+		t.Fatalf("selector not reconciled: an out-of-band selector must be corrected back to the cell, got %v", got.Spec.Selector)
+	}
+	if len(got.Spec.Ports) != 1 || got.Spec.Ports[0].Port != 9090 {
+		t.Fatalf("ports not reconciled: the metrics port must be restored to 9090, got %v", got.Spec.Ports)
+	}
+}
+
 func TestGNodeBReconciler_BuildDeployment(t *testing.T) {
 	r := &GNodeBReconciler{}
 	gnb := &ranv1alpha1.GNodeB{
