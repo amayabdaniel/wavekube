@@ -144,6 +144,56 @@ func TestGNodeBReconcile_RunningOnlyWhenReplicasReady(t *testing.T) {
 	}
 }
 
+// The readyReplicas printcolumn (kubectl get gnodeb -> READY) must reflect the
+// Deployment's actual ready count. The controller reads deploy.Status.ReadyReplicas
+// to decide the phase but previously never wrote gnb.Status.ReadyReplicas, so the
+// field -- and the operator-facing column built on it -- stayed at 0 no matter how
+// many cell replicas were running: declared, surfaced, inert. Effect-check mid-rollout
+// (3 of 5 ready): the value must be the OBSERVED 3, which also rules out a fix that
+// writes the desired count (gnb.Spec.Replicas == 5) instead of the ready count.
+func TestGNodeBReconcile_ReadyReplicasReflectsDeployment(t *testing.T) {
+	scheme := gnbScheme(t)
+	gnb := &ranv1alpha1.GNodeB{
+		ObjectMeta: metav1.ObjectMeta{Name: "rolling", Namespace: "default"},
+		Spec:       ranv1alpha1.GNodeBSpec{Image: "nvcr.io/nvidia/aerial/aerial-ran:24.3", Replicas: 5},
+	}
+	// The owned Deployment already exists with 3 of 5 replicas ready. One container so
+	// the reconciler's Containers[0].Image update path is valid.
+	deploy := &appsv1.Deployment{
+		ObjectMeta: metav1.ObjectMeta{Name: "rolling-ran", Namespace: "default"},
+		Spec: appsv1.DeploymentSpec{
+			Template: corev1.PodTemplateSpec{
+				Spec: corev1.PodSpec{Containers: []corev1.Container{{Name: "aerial-ran", Image: "old"}}},
+			},
+		},
+		Status: appsv1.DeploymentStatus{ReadyReplicas: 3},
+	}
+	c := fake.NewClientBuilder().WithScheme(scheme).
+		WithObjects(gnb, deploy).
+		WithStatusSubresource(gnb).Build()
+	r := &GNodeBReconciler{Client: c, Scheme: scheme}
+
+	if _, err := r.Reconcile(context.Background(), reconcile.Request{
+		NamespacedName: types.NamespacedName{Name: "rolling", Namespace: "default"},
+	}); err != nil {
+		t.Fatalf("reconcile: %v", err)
+	}
+
+	got := &ranv1alpha1.GNodeB{}
+	if err := c.Get(context.Background(), types.NamespacedName{Name: "rolling", Namespace: "default"}, got); err != nil {
+		t.Fatalf("get gnb: %v", err)
+	}
+	if got.Status.ReadyReplicas != 3 {
+		t.Fatalf("status.readyReplicas = %d, want 3 (the Deployment's observed ready count, not 0 and not the desired 5)", got.Status.ReadyReplicas)
+	}
+	// Sanity: 3 of 5 ready is still a rollout in progress, so this is genuinely the
+	// mid-rollout case (not Running), which is where a desired-count fix would wrongly
+	// report 5/5 complete.
+	if got.Status.Phase == "Running" {
+		t.Fatalf("3 of 5 ready must not be Running, got %q", got.Status.Phase)
+	}
+}
+
 // A non-NotFound read error on the metrics Service must surface from Reconcile
 // (so the controller requeues), not be swallowed while the reconcile goes on to
 // report the cell healthy. reconcileService previously fell through a bare

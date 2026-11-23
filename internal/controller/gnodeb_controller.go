@@ -79,6 +79,14 @@ func (r *GNodeBReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 	// moment the Deployment object exists (see gnodebPhaseFromDeployment).
 	phase, progressing := gnodebPhaseFromDeployment(deploy, gnb.Spec.Replicas)
 	gnb.Status.Phase = phase
+	// Surface the Deployment's observed ready count on the GNodeB's own status so the
+	// readyReplicas printcolumn (the READY column of `kubectl get gnodeb`) reflects how
+	// many cell replicas are actually ready. This is the same value
+	// gnodebPhaseFromDeployment reads to decide the phase, so READY and Phase can never
+	// disagree. The field and its column previously stayed at 0 however many replicas were
+	// running -- declared, surfaced to operators, and never written. It is the observed
+	// count, not gnb.Spec.Replicas (the desired count), so it reads correctly mid-rollout.
+	gnb.Status.ReadyReplicas = deploy.Status.ReadyReplicas
 	if err := r.Status().Update(ctx, gnb); err != nil {
 		return ctrl.Result{}, err
 	}
